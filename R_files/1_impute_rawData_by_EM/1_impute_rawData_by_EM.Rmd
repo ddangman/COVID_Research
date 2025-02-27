@@ -1,0 +1,224 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) # enables Knit code display
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) # disables Knit warning
+```
+
+
+```{r}
+library(readr)
+library(openxlsx)
+
+# Import raw data from github
+covid_url <- "https://raw.githubusercontent.com/ddangman/COVID_Research/refs/heads/main/data/dt.COVID_TCR.vjGene.p.csv"
+covid_df <- read_csv(covid_url)
+
+pt_info_url <- "https://raw.githubusercontent.com/ddangman/COVID_Research/refs/heads/main/data/dt.info_edited.xlsx"
+pt_info_df <- read.xlsx(pt_info_url, sheet = 1)
+
+healthy_url <- "https://raw.githubusercontent.com/ddangman/COVID_Research/refs/heads/main/data/dt.HD_TCR.vjGene.p.csv"
+healthy_df <- read_csv(healthy_url)
+
+# Transpose the dataset
+covid_transposed <- t(covid_df)
+healthy_transposed <- t(healthy_df)
+
+# Convert to data frame
+covid_transposed <- as.data.frame(covid_transposed, stringsAsFactors = FALSE)
+healthy_transposed <- as.data.frame(healthy_transposed, stringsAsFactors = FALSE)
+
+# Set first row as column names
+colnames(covid_transposed) <- covid_transposed[1, ]
+colnames(healthy_transposed) <- healthy_transposed[1, ]
+
+# Remove the first row
+covid_transposed <- covid_transposed[-1, ]
+healthy_transposed <- healthy_transposed[-1, ]
+
+# Remove "TRB" from column names
+colnames(covid_transposed) <- gsub("TRB", "", colnames(covid_transposed))
+colnames(healthy_transposed) <- gsub("TRB", "", colnames(healthy_transposed))
+
+# Strip "TRB-Pt-" from row names
+rownames(covid_transposed) <- gsub("TRB-Pt-", "", rownames(covid_transposed))
+
+# Identify unique columns in covid_transposed
+covid_unique_cols <- setdiff(colnames(covid_transposed), colnames(healthy_transposed))
+
+# Print the result
+print(covid_unique_cols)
+```
+
+Missing data approaches: \
+Mean imputation can be used when the distribution of the data is normal, and the missing values are random. \
+Median imputation is appropriate when the distribution of the data is skewed. \
+Mode imputation is used when dealing with categorical data, where the mode represents the most common category. \
+
+If we assume missing markers are present but below reading threshold, we can: \
+Assign some arbirtrarily small value based on minimum value of each feature. \
+Treat each feature as truncated distribution and use **expectation maximization** to impute most likely missing value.
+
+
+```{r}
+# Load necessary libraries
+library(dplyr)
+
+# Function to count normally distributed columns
+count_normal_columns <- function(df) {
+  normal_count <- sum(sapply(df, function(col) {
+    col <- as.numeric(col)  # Convert to numeric
+    col <- col[!is.na(col)]  # Remove NAs
+    n <- length(col)
+
+    if (n < 3) return(FALSE)  # Skip columns with fewer than 3 values
+    if (n > 5000) {
+      # Use Kolmogorov-Smirnov test for large samples
+      p_value <- ks.test(col, "pnorm", mean(col), sd(col))$p.value
+    } else {
+      # Use Shapiro-Wilk test for smaller samples
+      p_value <- shapiro.test(col)$p.value
+    }
+
+    return(p_value > 0.05)  # Returns TRUE if normally distributed
+  }))
+
+  return(normal_count)
+}
+
+# Count normally distributed columns
+covid_normal_count <- count_normal_columns(covid_transposed)
+healthy_normal_count <- count_normal_columns(healthy_transposed)
+
+# Print results
+cat("Number of normally distributed columns in COVID data set:", covid_normal_count, "\n")
+cat("Number of normally distributed columns in Healthy Donors:", healthy_normal_count, "\n")
+
+```
+
+```{r}
+# Convert all values to numeric (ignoring column names)
+covid_values <- as.numeric(unlist(covid_transposed))
+healthy_values <- as.numeric(unlist(healthy_transposed))
+
+# Find the minimum value in each dataset
+min_covid <- min(covid_values, na.rm = TRUE)
+min_healthy <- min(healthy_values, na.rm = TRUE)
+
+# Print the results
+cat("Smallest value in COVID data set:", min_covid, "\n")
+cat("Smallest value in Healthy Donor:", min_healthy, "\n")
+```
+
+```{r}
+# Function to extract the smallest value from each column
+get_min_values <- function(df) {
+  min_values <- sapply(df, function(col) {
+    col <- as.numeric(col)  # Convert to numeric
+    col <- col[!is.na(col)]  # Remove NAs
+    if (length(col) == 0) return(NA)  # Handle empty columns
+    return(min(col))  # Get the minimum value
+  })
+  return(min_values[!is.na(min_values)])  # Remove NA values
+}
+
+# Get smallest values from each column
+covid_min_values <- get_min_values(covid_transposed)
+healthy_min_values <- get_min_values(healthy_transposed)
+
+# Compute average of the minimum values
+avg_covid_min <- mean(covid_min_values, na.rm = TRUE)
+avg_healthy_min <- mean(healthy_min_values, na.rm = TRUE)
+
+# Print results
+cat("Average of smallest values in COVID data set:", avg_covid_min, "\n")
+cat("Average of smallest values in Healthy:", avg_healthy_min, "\n")
+
+```
+
+mice library depends on other columns to help impute values \
+this implementation subsets columns to run Expectation Maximization in parallel
+```{r}
+# Load necessary libraries
+library(mice)
+library(parallel)
+library(foreach)
+library(doParallel)
+
+# Detect number of available cores
+num_cores <- detectCores() - 1  # Leave one core free
+cl <- makeCluster(num_cores)
+registerDoParallel(cl)
+
+# Function to split dataset into smaller chunks (column-wise)
+split_dataframe <- function(df, num_splits) {
+  col_groups <- split(colnames(df), cut(seq_along(colnames(df)), num_splits, labels = FALSE))
+  return(lapply(col_groups, function(cols) df[, cols, drop = FALSE]))
+}
+
+# Function to impute missing values in parallel on each chunk
+impute_missing_values_parallel <- function(df, num_splits = num_cores) {
+  df <- as.data.frame(lapply(df, as.numeric))  # Ensure numeric format
+  
+  # Split the dataset into column subsets for parallel processing
+  df_splits <- split_dataframe(df, num_splits)
+
+  # Run `mice()` in parallel on each subset
+  imputed_splits <- foreach(chunk = df_splits, .combine = cbind, .packages = "mice") %dopar% {
+    imputed_result <- mice(chunk, method = "pmm", m = 1, maxit = 50, seed = 123, printFlag = FALSE)
+    return(complete(imputed_result))  # Return imputed chunk
+  }
+
+  return(imputed_splits)  # Return merged dataset
+}
+
+# Apply parallel imputation
+covid_imputed_parallel <- impute_missing_values_parallel(covid_transposed)
+healthy_imputed_parallel <- impute_missing_values_parallel(healthy_transposed)
+
+# Stop parallel cluster
+stopCluster(cl)
+```
+
+impute using Expectation Maximization on entire data set
+```{r}
+# Load necessary library
+library(mice)
+
+# Function to impute missing values while skipping error-causing columns
+impute_missing_values <- function(df) {
+  df <- as.data.frame(lapply(df, as.numeric))  # Ensure numeric format
+
+  # Identify columns that will cause errors (fully NA or constant)
+  problematic_cols <- sapply(df, function(col) {
+    col <- col[!is.na(col)]  # Remove NA values
+    return(length(unique(col)) < 2)  # If fewer than 2 unique values, it's problematic
+  })
+
+  # Subset dataframe to exclude problematic columns
+  df_valid <- df[, !problematic_cols]
+
+  # Run imputation only on valid columns
+  imputed_data <- mice(df_valid, method = "pmm", m = 1, maxit = 50, seed = 123)
+
+  # Merge imputed values back into original dataframe (keeping skipped columns unchanged)
+  df[, !problematic_cols] <- complete(imputed_data)
+
+  return(df)  # Return the completed dataset
+}
+
+# Apply EM-based imputation while skipping error-prone columns
+covid_imputed <- impute_missing_values(covid_transposed)
+healthy_imputed <- impute_missing_values(healthy_transposed)
+```
+
+
+
+save as single data frame
+```{r}
+saveRDS(covid_imputed, "covid_EM_imputed.rds")
+saveRDS(healthy_imputed, "healthy_EM_imputed.rds")
+```
+
+
+
+
+
