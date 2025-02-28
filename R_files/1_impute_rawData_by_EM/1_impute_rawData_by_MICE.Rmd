@@ -134,51 +134,9 @@ cat("Average of smallest values in Healthy:", avg_healthy_min, "\n")
 
 ```
 
-mice library depends on other columns to help impute values \
-this implementation subsets columns to run Expectation Maximization in parallel
-```{r}
-# Load necessary libraries
-library(mice)
-library(parallel)
-library(foreach)
-library(doParallel)
 
-# Detect number of available cores
-num_cores <- detectCores() - 1  # Leave one core free
-cl <- makeCluster(num_cores)
-registerDoParallel(cl)
-
-# Function to split dataset into smaller chunks (column-wise)
-split_dataframe <- function(df, num_splits) {
-  col_groups <- split(colnames(df), cut(seq_along(colnames(df)), num_splits, labels = FALSE))
-  return(lapply(col_groups, function(cols) df[, cols, drop = FALSE]))
-}
-
-# Function to impute missing values in parallel on each chunk
-impute_missing_values_parallel <- function(df, num_splits = num_cores) {
-  df <- as.data.frame(lapply(df, as.numeric))  # Ensure numeric format
-  
-  # Split the dataset into column subsets for parallel processing
-  df_splits <- split_dataframe(df, num_splits)
-
-  # Run `mice()` in parallel on each subset
-  imputed_splits <- foreach(chunk = df_splits, .combine = cbind, .packages = "mice") %dopar% {
-    imputed_result <- mice(chunk, method = "pmm", m = 1, maxit = 50, seed = 123, printFlag = FALSE)
-    return(complete(imputed_result))  # Return imputed chunk
-  }
-
-  return(imputed_splits)  # Return merged dataset
-}
-
-# Apply parallel imputation
-covid_imputed_parallel <- impute_missing_values_parallel(covid_transposed)
-healthy_imputed_parallel <- impute_missing_values_parallel(healthy_transposed)
-
-# Stop parallel cluster
-stopCluster(cl)
-```
-
-impute using Expectation Maximization on entire data set
+impute using MICE on entire data set \
+While both "MICE" (Multiple Imputation by Chained Equations) and "Expectation Maximization (EM)" are used to handle missing data in statistics, the key difference is that MICE directly imputes missing values by filling them in with plausible estimates, whereas EM estimates model parameters based on the likelihood function without explicitly filling in the missing data points; essentially, MICE creates multiple complete datasets while EM works on the incomplete dataset itself to find the best parameters. 
 ```{r}
 # Load necessary library
 library(mice)
@@ -211,14 +169,36 @@ healthy_imputed <- impute_missing_values(healthy_transposed)
 ```
 
 
-
 save as single data frame
 ```{r}
-saveRDS(covid_imputed, "covid_EM_imputed.rds")
-saveRDS(healthy_imputed, "healthy_EM_imputed.rds")
+saveRDS(covid_imputed, "covid_MICE_imputed.rds")
+saveRDS(healthy_imputed, "healthy_MICE_imputed.rds")
 ```
 
 
+If we assume NA values are below detection threshold, \
+we want to see how this assumption compares to MICE imputations \
+we can replace NA with minimum value of each column and subtract imputed data set
+```{r}
+# Function to replace NA with the smallest value in the column
+replace_na_with_min <- function(df) {
+  df <- as.data.frame(lapply(df, function(col) {
+    col <- as.numeric(col)  # Ensure numeric format
+    min_val <- min(col, na.rm = TRUE)  # Find the smallest value (ignoring NA)
+    col[is.na(col)] <- min_val  # Replace NA with the smallest value
+    return(col)
+  }))
+  return(df)
+}
+
+# Apply NA replacement on imputed datasets
+covid_min <- replace_na_with_min(covid_transposed)
+healthy_min <- replace_na_with_min(healthy_transposed)
+
+# Subtract while handling NA values
+covid_diff <- as.data.frame(mapply(function(x, y) ifelse(is.na(x) | is.na(y), x, x - y), covid_min, covid_imputed))
+healthy_diff <- as.data.frame(mapply(function(x, y) ifelse(is.na(x) | is.na(y), x, x - y), healthy_min, healthy_imputed))
+```
 
 
 
