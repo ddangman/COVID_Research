@@ -1,0 +1,22 @@
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE) # enables Knit code display
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) # disables Knit warning
+```
+
+
+```{r}
+library(openxlsx)
+
+# Define the URLs
+covid_url <- "https://github.com/ddangman/COVID_Research/raw/refs/heads/main/R_files/1_impute_rawData_by_EM/covid_MICE_imputed.rds"
+healthy_url <- "https://github.com/ddangman/COVID_Research/raw/refs/heads/main/R_files/1_impute_rawData_by_EM/healthy_MICE_imputed.rds"
+
+# Read RDS directly from URL without saving as a file
+covid_imputed <- readRDS(gzcon(url(covid_url, "rb")))
+healthy_imputed <- readRDS(gzcon(url(healthy_url, "rb")))
+
+# Import patient information from Excel file
+pt_info_url <- "https://raw.githubusercontent.com/ddangman/COVID_Research/main/data/dt.info_edited.xlsx"
+pt_info_df <- read.xlsx(pt_info_url, sheet = 1)
+```
+

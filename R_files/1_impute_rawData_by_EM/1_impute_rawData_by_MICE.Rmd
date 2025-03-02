@@ -200,5 +200,62 @@ covid_diff <- as.data.frame(mapply(function(x, y) ifelse(is.na(x) | is.na(y), x,
 healthy_diff <- as.data.frame(mapply(function(x, y) ifelse(is.na(x) | is.na(y), x, x - y), healthy_min, healthy_imputed))
 ```
 
+We see most of the difference is negative, which is the result we want if we assume NA values are below detection threshold \
+Some of the values are positive such as those in column "V10.2_J2.4". \
+These values were skipped due to NA cannot be subtracted from a number \
+Unfortunately, this is not one of the columns present in COVID data set that is missing from Healthy Donor data set as that would give us two reasons to drop that column. \
 
 
+Find positive difference where data was not imputed. \
+```{r}
+# Create a logical matrix where:
+# - TRUE means the value in covid_diff is positive AND the corresponding value in covid_transposed is NA
+imputed_above_col_min_COVID <- covid_diff > 0 & is.na(covid_imputed)
+intersect1 <- sum(imputed_above_col_min_COVID)
+print(intersect1)
+
+imputed_above_col_min_HD <- healthy_diff > 0 & is.na(healthy_imputed)
+intersect2 <- sum(imputed_above_col_min_HD)
+print(intersect2)
+```
+
+If difference value is positive, then we have an imputed value that is potentially greater than the column's minimum value \
+If that value corresponds NA imputed, then MICE algorithm failed to impute due to lack of data, which explains the positive value.
+```{r}
+cat(intersect1, "==", sum(covid_diff > 0), "==", sum(is.na(covid_imputed)), "\n")
+cat(intersect2, "==", sum(healthy_diff > 0), "==", sum(is.na(healthy_imputed)))
+```
+
+Count of values not imputed matches count of positive difference. This also matches intersection. \
+count(intersect_AB) == count(A) == count(B)
+
+Check that all NA values are accounted for
+```{r}
+NA_count1 <- sum(is.na(covid_transposed))
+lt_min1 <- sum(covid_diff < 0) # COVID imputed less than column's minimum
+no_impute1 <- sum(is.na(covid_imputed)) # no MICE imputed COVID
+cat(NA_count1, "==", lt_min1+no_impute1, "=", lt_min1, "+", no_impute1, "\n")
+
+NA_count2 <- sum(is.na(healthy_transposed))
+lt_min2 <- sum(healthy_diff < 0) # HD imputed less than column's minimum
+no_impute2 <- sum(is.na(healthy_imputed)) # no MICE impute Healthy Donor
+cat(NA_count2, "==", lt_min2+no_impute2, "=", lt_min2, "+", no_impute2)
+```
+
+How many were imputed to be the column's minimum?
+```{r}
+imputed_as_min1 <- sum(covid_diff == 0 & is.na(covid_transposed))
+imputed_as_min1
+
+imputed_as_min2 <- sum(healthy_diff == 0 & is.na(healthy_transposed))
+imputed_as_min2
+```
+
+Are all NA values accounted for now?
+```{r}
+cat(NA_count1, "==", lt_min1+no_impute1+imputed_as_min1, "=", lt_min1, "+", no_impute1, "+", imputed_as_min1,"\n")
+cat(NA_count2, "==", lt_min2+no_impute2+imputed_as_min2, "=", lt_min2, "+", no_impute2, "+", imputed_as_min2)
+```
+
+Should we leave values imputed to be the column's minimum as is or nudge them lower? \
+If so, how much should we nudge them below our unknown measurable threshold we are assuming exists?
